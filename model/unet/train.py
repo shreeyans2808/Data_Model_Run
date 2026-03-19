@@ -9,6 +9,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 # Assuming unet.py is in the same directory
 from unet import UNet
+from csi_eval import soft_csi_loss, hard_csi
 
 # ==========================================
 # CONFIGURATION
@@ -53,31 +54,45 @@ class NPZDataset(Dataset):
 # LIGHTNING MODULE
 # ==========================================
 class UNetLightning(pl.LightningModule):
-    def __init__(self, lr=1e-4, weight_decay=0.0):
+    def __init__(self, lr=1e-4, weight_decay=0.0, threshold=1.0):
         super().__init__()
         self.save_hyperparameters()
-        self.model   = UNet(channels_in=12, channels_out=18)
-        self.loss_fn = nn.L1Loss()
+
+        self.model = UNet(channels_in=12, channels_out=18)
+        self.threshold = threshold
 
     def forward(self, x):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        loss = self.loss_fn(self(x), y)
+
+        pred = self(x)
+
+        loss = soft_csi_loss(pred, y, threshold=self.threshold)
+
         self.log("train_loss", loss, prog_bar=True, on_epoch=True)
+
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        loss = self.loss_fn(self(x), y)
+
+        pred = self(x)
+
+        loss = soft_csi_loss(pred, y, threshold=self.threshold)
+
+        csi = hard_csi(pred, y, threshold=self.threshold)
+
         self.log("val_loss", loss, prog_bar=True)
+        self.log("val_CSI", csi, prog_bar=True)
+
         return loss
 
     def configure_optimizers(self):
         return torch.optim.Adam(
-            self.parameters(), 
-            lr=self.hparams.lr, 
+            self.parameters(),
+            lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay
         )
 
@@ -125,10 +140,10 @@ def main():
 
     # 3. Trainer Setup
     checkpoint_callback = ModelCheckpoint(
-        monitor="val_loss", 
+        monitor="val_CSI"
+        mode="max" , 
         filename="unet-best-{epoch:02d}", 
         save_top_k=3, 
-        mode="min"
     )
 
     trainer = pl.Trainer(
@@ -139,7 +154,11 @@ def main():
     )
 
     # 4. Start
-    model = UNetLightning(lr=CONFIG["lr"], weight_decay=CONFIG["weight_decay"])
+    model = UNetLightning(
+    lr=CONFIG["lr"],
+    weight_decay=CONFIG["weight_decay"],
+    threshold=1.0
+)
     trainer.fit(model, train_loader, val_loader)
 
 if __name__ == "__main__":

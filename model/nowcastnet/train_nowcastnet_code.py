@@ -65,7 +65,7 @@ CFG = {
     "seed":             42,
     "num_workers":      4,
     "save_dir":         "checkpoints/nowcastnet",
-    "csi_thresholds":   [0.1, 1.0, 5.0, 10.0],
+    "csi_thresholds":   [1.0],
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 }
 
@@ -421,7 +421,7 @@ def main():
 
     csi = CSIMetric(CFG["csi_thresholds"])
     os.makedirs(CFG["save_dir"], exist_ok=True)
-    best_g = float("inf")
+    best_csi = -1.0
     best_p = os.path.join(CFG["save_dir"], "best_generator.pt")
 
     for epoch in range(1, CFG["num_epochs"] + 1):
@@ -446,10 +446,12 @@ def main():
             "cfg":           CFG,
         }, os.path.join(CFG["save_dir"], f"epoch_{epoch:03d}.pt"))
 
-        if va["g_loss"] < best_g:
-            best_g = va["g_loss"]
+        current_csi = va["csi@1.0"]
+
+        if current_csi > best_csi:
+            best_csi = current_csi
             torch.save(generator.state_dict(), best_p)
-            print(f"  ✓ New best {best_g:.4f}  ->  {best_p}")
+            print(f"  ✓ New BEST CSI@1.0 {best_csi:.4f}  ->  {best_p}")
 
     print("\n[test] Loading best generator ...")
     generator.load_state_dict(torch.load(best_p, map_location=device))
