@@ -9,7 +9,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 # Assuming unet.py is in the same directory
 from unet import UNet
-from csi_eval import soft_csi_loss, hard_csi
+from model.eval_metrics import soft_csi_loss, hard_csi
+from model.eval_metrics import compute_fss, exp_weighted_temporal_fss
 
 # ==========================================
 # CONFIGURATION
@@ -65,36 +66,74 @@ class UNetLightning(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
+
         x, y = batch
 
         pred = self(x)
 
         loss = soft_csi_loss(pred, y, threshold=self.threshold)
 
+        # ---- reshape for temporal metrics ----
+        with torch.no_grad():
+
+            B, C, H, W = pred.shape
+
+            pred_seq = pred.view(B, 6, 3, H, W)[:, :, 0]
+            y_seq    = y.view(B, 6, 3, H, W)[:, :, 0]
+
+            fss_score = compute_fss(pred_seq, y_seq, threshold=1.0, scale=5)
+
+            tw_fss = exp_weighted_temporal_fss(
+                pred_seq,
+                y_seq,
+                threshold=1.0,
+                scale=5
+            )
+
         self.log("train_loss", loss, prog_bar=True, on_epoch=True)
+        self.log("train_FSS", fss_score, prog_bar=False)
+        self.log("train_TWFSS", tw_fss, prog_bar=False)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
+
         x, y = batch
-
+    
         pred = self(x)
-
+    
         loss = soft_csi_loss(pred, y, threshold=self.threshold)
-
+    
         csi = hard_csi(pred, y, threshold=self.threshold)
-
+    
+        # ---- reshape temporal ----
+        B, C, H, W = pred.shape
+    
+        pred_seq = pred.view(B, 6, 3, H, W)[:, :, 0]
+        y_seq    = y.view(B, 6, 3, H, W)[:, :, 0]
+    
+        # ---- original FSS ----
+        fss_score = compute_fss(
+            pred_seq,
+            y_seq,
+            threshold=1.0,
+            scale=5
+        )
+    
+        # ---- custom weighted FSS ----
+        tw_fss = exp_weighted_temporal_fss(
+            pred_seq,
+            y_seq,
+            threshold=1.0,
+            scale=5
+        )
+    
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_CSI", csi, prog_bar=True)
-
+        self.log("val_FSS", fss_score, prog_bar=True)
+        self.log("val_TWFSS", tw_fss, prog_bar=True)
+    
         return loss
-
-    def configure_optimizers(self):
-        return torch.optim.Adam(
-            self.parameters(),
-            lr=self.hparams.lr,
-            weight_decay=self.hparams.weight_decay
-        )
 
 # ==========================================
 # TRAINING EXECUTION

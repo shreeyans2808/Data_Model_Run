@@ -38,6 +38,7 @@ from pysteps import motion as pysteps_motion
 from pysteps.utils import conversion, transformation
 
 from model.nowcastnet.nowcastnet_model_code import NowcasnetGenerator, TemporalDiscriminator
+from model.eval_metrics import compute_fss, exp_weighted_temporal_fss
 
 
 # ------------------------------------------------------------------------------
@@ -280,6 +281,8 @@ def run_epoch(
     csi_metric.reset()
 
     totals, n_batches = {}, 0
+    fss_total = 0.0
+    twfss_total = 0.0
     rain_ch    = cfg["rain_channel"]
     gen_steps  = cfg["generation_steps"]
     output_len = cfg["output_len"]
@@ -363,6 +366,27 @@ def run_epoch(
             # ── CSI ────────────────────────────────────────────────────────────
             with torch.no_grad():
                 csi_metric.update(generated_samples.mean(0).detach(), x_after)
+            # ── FSS METRICS ─────────────────────
+            with torch.no_grad():
+            
+                pred_seq = generated_samples.mean(0).detach()   # (B,T,H,W)
+
+                fss_score = compute_fss(
+                    pred_seq,
+                    x_after,
+                    threshold=1.0,
+                    scale=5
+                )
+
+                twfss_score = exp_weighted_temporal_fss(
+                    pred_seq,
+                    x_after,
+                    threshold=1.0,
+                    scale=5
+                )
+
+                fss_total += fss_score
+                twfss_total += twfss_score
 
             for k, v in {
                 "g_loss": g_tot.item(), "g_adv": g_adv.item(), "cell": cell.item(),
@@ -373,7 +397,12 @@ def run_epoch(
             n_batches += 1
 
     avg = {k: v / n_batches for k, v in totals.items()}
+
     avg.update(csi_metric.compute())
+    
+    avg["fss"] = fss_total / n_batches
+    avg["twfss"] = twfss_total / n_batches
+    
     return avg
 
 
@@ -431,10 +460,13 @@ def main():
                        csi, opt_g, opt_d, device, CFG, training=False)
 
         print(f"\n[Epoch {epoch:03d}/{CFG['num_epochs']}]")
-        print(f"  TRAIN  loss: {_fmt({k:v for k,v in tr.items() if not k.startswith('csi')})}")
-        print(f"         CSI:  {_fmt({k:v for k,v in tr.items() if     k.startswith('csi')})}")
-        print(f"  VAL    loss: {_fmt({k:v for k,v in va.items() if not k.startswith('csi')})}")
-        print(f"         CSI:  {_fmt({k:v for k,v in va.items() if     k.startswith('csi')})}")
+        print(f"  TRAIN  loss: {_fmt({k:v for k,v in tr.items() if k in ['g_loss','d_loss','cell','g_adv']})}")
+        print(f"         CSI:  {_fmt({k:v for k,v in tr.items() if k.startswith('csi')})}")
+        print(f"         FSS:  fss={tr['fss']:.4f}  twfss={tr['twfss']:.4f}")
+
+        print(f"  VAL    loss: {_fmt({k:v for k,v in va.items() if k in ['g_loss','d_loss','cell','g_adv']})}")
+        print(f"         CSI:  {_fmt({k:v for k,v in va.items() if k.startswith('csi')})}")
+        print(f"         FSS:  fss={va['fss']:.4f}  twfss={va['twfss']:.4f}")
 
         torch.save({
             "epoch":         epoch,
@@ -457,8 +489,8 @@ def main():
     generator.load_state_dict(torch.load(best_p, map_location=device))
     te = run_epoch(generator, discriminator, test_loader,
                    csi, opt_g, opt_d, device, CFG, training=False)
-    print(f"[test] loss: {_fmt({k:v for k,v in te.items() if not k.startswith('csi')})}")
-    print(f"[test] CSI:  {_fmt({k:v for k,v in te.items() if     k.startswith('csi')})}")
+    print(f"[test] CSI:  {_fmt({k:v for k,v in te.items() if k.startswith('csi')})}")
+    print(f"[test] FSS:  fss={te['fss']:.4f}  twfss={te['twfss']:.4f}")
 
 
 if __name__ == "__main__":

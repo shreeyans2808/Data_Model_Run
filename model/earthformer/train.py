@@ -8,7 +8,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 # Assuming these local modules are in your path
 from earthformer.model_arch import EarthformerModel
-from csi_eval import soft_csi_loss, hard_csi
+from model.eval_metrics import soft_csi_loss, hard_csi
+from model.eval_metrics import compute_fss, exp_weighted_temporal_fss
 
 # ==========================================
 # CONFIGURATION
@@ -58,22 +59,70 @@ class EarthformerLightning(EarthformerModel):
         self.threshold = threshold
 
     def training_step(self, batch, batch_idx):
+
         x, y = batch
+
         pred = self(x)
-        # Using soft_csi for gradients
-        loss = soft_csi_loss(pred, y, threshold=self.threshold)  
+
+        loss = soft_csi_loss(pred, y, threshold=self.threshold)
+
+        with torch.no_grad():
+
+            pred_rain = pred[..., 0]   # (B, T, H, W)
+            y_rain    = y[..., 0]
+
+            fss_score = compute_fss(
+                pred_rain,
+                y_rain,
+                threshold=1.0,
+                scale=5
+            )
+
+            tw_fss = exp_weighted_temporal_fss(
+                pred_rain,
+                y_rain,
+                threshold=1.0,
+                scale=5
+            )
+
         self.log("train_loss", loss, prog_bar=True, on_epoch=True)
+        self.log("train_FSS", fss_score)
+        self.log("train_TWFSS", tw_fss)
+
         return loss
 
     def validation_step(self, batch, batch_idx):
+
         x, y = batch
+    
         pred = self(x)
+    
         loss = soft_csi_loss(pred, y, threshold=self.threshold)
-        # Monitoring hard CSI (the "real" metric)
-        csi  = hard_csi(pred, y, threshold=self.threshold)       
-        
+    
+        csi = hard_csi(pred, y, threshold=self.threshold)
+    
+        pred_rain = pred[..., 0]   # (B, T, H, W)
+        y_rain    = y[..., 0]
+    
+        fss_score = compute_fss(
+            pred_rain,
+            y_rain,
+            threshold=1.0,
+            scale=5
+        )
+    
+        tw_fss = exp_weighted_temporal_fss(
+            pred_rain,
+            y_rain,
+            threshold=1.0,
+            scale=5
+        )
+    
         self.log("val_loss", loss, prog_bar=True)
-        self.log("val_CSI",  csi,  prog_bar=True)
+        self.log("val_CSI", csi, prog_bar=True)
+        self.log("val_FSS", fss_score, prog_bar=True)
+        self.log("val_TWFSS", tw_fss, prog_bar=True)
+    
         return loss
 
 # ==========================================
